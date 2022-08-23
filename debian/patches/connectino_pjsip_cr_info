@@ -1,0 +1,257 @@
+From 2fad8cef731973f55376cc3424a59c7838e0c61f Mon Sep 17 00:00:00 2001
+From: root <root@firewall.hivepal.com>
+Date: Sat, 20 Aug 2022 07:38:45 -0400
+Subject: [PATCH 1/2] Add Sip cr info  patch
+
+---
+ channels/chan_pjsip.c               | 64 +++++++++++++++++++++++++++++
+ include/asterisk/res_pjsip.h        |  2 +
+ recomplile.sh                       |  5 +++
+ res/res_pjsip/pjsip_configuration.c |  1 +
+ 4 files changed, 72 insertions(+)
+ create mode 100755 recomplile.sh
+
+diff --git a/channels/chan_pjsip.c b/channels/chan_pjsip.c
+index 07b9088..6ecbe3c 100644
+--- a/channels/chan_pjsip.c
++++ b/channels/chan_pjsip.c
+@@ -104,6 +104,9 @@ static int chan_pjsip_fixup(struct ast_channel *oldchan, struct ast_channel *new
+ static int chan_pjsip_devicestate(const char *data);
+ static int chan_pjsip_queryoption(struct ast_channel *ast, int option, void *data, int *datalen);
+ static const char *chan_pjsip_get_uniqueid(struct ast_channel *ast);
++static int moji_transmit_info_cr(void *data) ; 
++int  send_info_flag = 0 ; 
++
+ 
+ /*! \brief PBX interface structure for channel registration */
+ struct ast_channel_tech chan_pjsip_tech = {
+@@ -1801,6 +1804,11 @@ static int chan_pjsip_indicate(struct ast_channel *ast, int condition, const voi
+ 	case AST_CONTROL_SRCUPDATE:
+ 		break;
+ 	case AST_CONTROL_SRCCHANGE:
++		if(send_info_flag ==1 )	{
++				ast_log(LOG_WARNING, "SRCCHANGE is not supported          -----------------         \n");
++				moji_transmit_info_cr(channel->session) ;	
++				send_info_flag = 0 ; 
++			}	
+ 		break;
+ 	case AST_CONTROL_REDIRECTING:
+ 		if (ast_channel_state(ast) != AST_STATE_UP) {
+@@ -3274,6 +3282,62 @@ static int update_devstate(void *obj, void *arg, int flags)
+ 	return 0;
+ }
+ 
++/*! \brief Send SIP INFO for  cr  */
++static int moji_transmit_info_cr(void *data)
++{
++
++	struct pjsip_tx_data *tdata;
++	RAII_VAR(struct ast_str *, body_text, NULL, ast_free_ptr);
++	RAII_VAR(struct ast_sip_session *, session, data, ao2_cleanup);
++	ast_log(LOG_NOTICE, "---------------------------------------------Sending INFO allowsendcrinfo %d\n",session->endpoint->allowsendcrinfo);
++	// const char * srv_data ="service=cfu;forwarder=100;destnum=09103637891;action=100;cid=2143612000;cidname=2143612000;dest=2191031010;aip=89.235.69.254:5060;bip=" ;
++
++	struct ast_sip_body body = {
++		.type = "application",
++		.subtype = "exserv",
++	};
++
++	if (!(body_text = ast_str_create(128)))
++	{
++		ast_log(LOG_ERROR, "Could not allocate buffer for INFO CR.\n");
++		return -1;
++	}
++
++
++	char *service_type = "cfu";
++	char *forwarder = "100";
++	char *destnum = "09103637891";
++	char *action = "100";
++	char *cid = "2143612000";
++	char *cidname = "2143612000";
++	char *dest = "2191031010";
++	char *aip = "172.16.15.1:5060";
++	char *bip = "172.16.15.1:5060";
++
++	ast_str_set(&body_text, 0, "service=%s;forwarder=%s;destnum=%s;action=%s;cid=%s;cidname=%s;dest=%s;aip=%s;bip=%s\r\n",
++				service_type, forwarder, destnum, action, cid, cidname, dest, aip, bip);
++
++	body.body_text = ast_str_buffer(body_text);
++
++	if (ast_sip_create_request("INFO", session->inv_session->dlg, session->endpoint, NULL, NULL, &tdata))
++	{
++		ast_log(LOG_ERROR, "Could not create text  CR INFO request\n");
++		return -1;
++	}
++
++	if (ast_sip_add_body(tdata, &body))
++	{
++		ast_log(LOG_ERROR, "Could not add body to text CR INFO request\n");
++		return -1;
++	}
++
++	ast_sip_session_send_request(session, tdata);
++
++	ast_log(LOG_WARNING, "mkm_xx(5) Send CR INFO request Successfully \n");
++	return 0;
++}
++
++
+ static struct ast_custom_function chan_pjsip_dial_contacts_function = {
+ 	.name = "PJSIP_DIAL_CONTACTS",
+ 	.read = pjsip_acf_dial_contacts_read,
+diff --git a/include/asterisk/res_pjsip.h b/include/asterisk/res_pjsip.h
+index b3717e7..df9ba3c 100644
+--- a/include/asterisk/res_pjsip.h
++++ b/include/asterisk/res_pjsip.h
+@@ -926,6 +926,8 @@ struct ast_sip_endpoint {
+ 	unsigned int faxdetect;
+ 	/*! Determines if transfers (using REFER) are allowed by this endpoint */
+ 	unsigned int allowtransfer;
++	/*! mkm_xx */
++	unsigned int allowsendcrinfo;	
+ 	/*! Method used when handling redirects */
+ 	enum ast_sip_session_redirect redirect_method;
+ 	/*! Variables set on channel creation */
+diff --git a/recomplile.sh b/recomplile.sh
+new file mode 100755
+index 0000000..59a3fe1
+--- /dev/null
++++ b/recomplile.sh
+@@ -0,0 +1,5 @@
++#!/bin/bash
++
++make -j3  
++make install 
++asterisk -rx "core restart now" ;
+diff --git a/res/res_pjsip/pjsip_configuration.c b/res/res_pjsip/pjsip_configuration.c
+index 6bc978d..5755658 100644
+--- a/res/res_pjsip/pjsip_configuration.c
++++ b/res/res_pjsip/pjsip_configuration.c
+@@ -2152,6 +2152,7 @@ int ast_res_pjsip_initialize_configuration(void)
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "record_on_feature", "automixmon", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, info.recording.onfeature));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "record_off_feature", "automixmon", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, info.recording.offfeature));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "allow_transfer", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, allowtransfer));
++	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "allow_send_cr_info", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, allowsendcrinfo));//mkm_xx	
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "user_eq_phone", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, usereqphone));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "moh_passthrough", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, moh_passthrough));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "sdp_owner", "-", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, media.sdpowner));
+
+From e4580d2c45cee11d4a9a418651ec983ac96460a5 Mon Sep 17 00:00:00 2001
+From: root <root@firewall.hivepal.com>
+Date: Tue, 23 Aug 2022 00:41:27 -0400
+Subject: [PATCH 2/2] Bug fix, add  variable in channel
+
+---
+ channels/chan_pjsip.c                | 29 ++++++++++++++--------------
+ include/asterisk/res_pjsip_session.h |  2 ++
+ res/res_pjsip/pjsip_configuration.c  |  2 +-
+ 3 files changed, 18 insertions(+), 15 deletions(-)
+
+diff --git a/channels/chan_pjsip.c b/channels/chan_pjsip.c
+index 6ecbe3c..1df0fe3 100644
+--- a/channels/chan_pjsip.c
++++ b/channels/chan_pjsip.c
+@@ -104,8 +104,8 @@ static int chan_pjsip_fixup(struct ast_channel *oldchan, struct ast_channel *new
+ static int chan_pjsip_devicestate(const char *data);
+ static int chan_pjsip_queryoption(struct ast_channel *ast, int option, void *data, int *datalen);
+ static const char *chan_pjsip_get_uniqueid(struct ast_channel *ast);
+-static int moji_transmit_info_cr(void *data) ; 
+-int  send_info_flag = 0 ; 
++static int send_cr_info(void *data) ; 
++
+ 
+ 
+ /*! \brief PBX interface structure for channel registration */
+@@ -1649,6 +1649,7 @@ static int chan_pjsip_indicate(struct ast_channel *ast, int condition, const voi
+ 			res = -1;
+ 		}
+ 		ast_devstate_changed(AST_DEVICE_UNKNOWN, AST_DEVSTATE_CACHABLE, "PJSIP/%s", ast_sorcery_object_get_id(channel->session->endpoint));
++		channel->session->send_cr_info_flag =1 ; 		
+ 		break;
+ 	case AST_CONTROL_BUSY:
+ 		if (ast_channel_state(ast) != AST_STATE_UP) {
+@@ -1802,13 +1803,15 @@ static int chan_pjsip_indicate(struct ast_channel *ast, int condition, const voi
+ 		}
+ 		break;
+ 	case AST_CONTROL_SRCUPDATE:
++		ast_log(LOG_WARNING, "AST_CONTROL_SRCUPDATE is not supported          -----------------         \n");
+ 		break;
+ 	case AST_CONTROL_SRCCHANGE:
+-		if(send_info_flag ==1 )	{
+-				ast_log(LOG_WARNING, "SRCCHANGE is not supported          -----------------         \n");
+-				moji_transmit_info_cr(channel->session) ;	
+-				send_info_flag = 0 ; 
+-			}	
++		ast_log(LOG_NOTICE, "   Try to send  INFO for  %s with allowsendcrinfo %d  send_cr_info_flag:  %d \n", ast_channel_name(ast), channel->session->endpoint->allowsendcrinfo, channel->session->send_cr_info_flag);
++		if ((channel->session->send_cr_info_flag == 1) && (channel->session->endpoint->allowsendcrinfo))
++		{
++			send_cr_info(channel->session);
++			channel->session->send_cr_info_flag = 0;
++		}
+ 		break;
+ 	case AST_CONTROL_REDIRECTING:
+ 		if (ast_channel_state(ast) != AST_STATE_UP) {
+@@ -3282,15 +3285,15 @@ static int update_devstate(void *obj, void *arg, int flags)
+ 	return 0;
+ }
+ 
+-/*! \brief Send SIP INFO for  cr  */
+-static int moji_transmit_info_cr(void *data)
++/*! \brief Send SIP CR INFO  */
++static int send_cr_info(void *data)
+ {
+ 
+ 	struct pjsip_tx_data *tdata;
+ 	RAII_VAR(struct ast_str *, body_text, NULL, ast_free_ptr);
+-	RAII_VAR(struct ast_sip_session *, session, data, ao2_cleanup);
+-	ast_log(LOG_NOTICE, "---------------------------------------------Sending INFO allowsendcrinfo %d\n",session->endpoint->allowsendcrinfo);
+-	// const char * srv_data ="service=cfu;forwarder=100;destnum=09103637891;action=100;cid=2143612000;cidname=2143612000;dest=2191031010;aip=89.235.69.254:5060;bip=" ;
++
++	struct ast_sip_session *session = data;
++	ast_log(LOG_NOTICE, "---------------------------------------------Sending INFO allowsendcrinfo %d\n", session->endpoint->allowsendcrinfo);
+ 
+ 	struct ast_sip_body body = {
+ 		.type = "application",
+@@ -3303,7 +3306,6 @@ static int moji_transmit_info_cr(void *data)
+ 		return -1;
+ 	}
+ 
+-
+ 	char *service_type = "cfu";
+ 	char *forwarder = "100";
+ 	char *destnum = "09103637891";
+@@ -3337,7 +3339,6 @@ static int moji_transmit_info_cr(void *data)
+ 	return 0;
+ }
+ 
+-
+ static struct ast_custom_function chan_pjsip_dial_contacts_function = {
+ 	.name = "PJSIP_DIAL_CONTACTS",
+ 	.read = pjsip_acf_dial_contacts_read,
+diff --git a/include/asterisk/res_pjsip_session.h b/include/asterisk/res_pjsip_session.h
+index 49e6007..8754fe8 100644
+--- a/include/asterisk/res_pjsip_session.h
++++ b/include/asterisk/res_pjsip_session.h
+@@ -241,6 +241,8 @@ struct ast_sip_session {
+ 	enum ast_sip_session_call_direction call_direction;
+ 	/*! Originating Line Info (ANI II digits) */
+ 	int ani2;
++	/*! Sending cr info flag */
++	int  send_cr_info_flag;
+ };
+ 
+ typedef int (*ast_sip_session_request_creation_cb)(struct ast_sip_session *session, pjsip_tx_data *tdata);
+diff --git a/res/res_pjsip/pjsip_configuration.c b/res/res_pjsip/pjsip_configuration.c
+index 5755658..ffc804d 100644
+--- a/res/res_pjsip/pjsip_configuration.c
++++ b/res/res_pjsip/pjsip_configuration.c
+@@ -2152,7 +2152,7 @@ int ast_res_pjsip_initialize_configuration(void)
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "record_on_feature", "automixmon", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, info.recording.onfeature));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "record_off_feature", "automixmon", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, info.recording.offfeature));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "allow_transfer", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, allowtransfer));
+-	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "allow_send_cr_info", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, allowsendcrinfo));//mkm_xx	
++	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "allow_send_cr_info", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, allowsendcrinfo)); // mkm_xx
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "user_eq_phone", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, usereqphone));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "moh_passthrough", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, moh_passthrough));
+ 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "sdp_owner", "-", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, media.sdpowner));
